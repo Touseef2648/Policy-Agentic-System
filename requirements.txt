@@ -1,0 +1,14 @@
+pandas
+torch
+transformers
+langchain
+langchain-community
+langchain-weaviate
+langchain-huggingface
+langchain-text-splitters
+langchain-classic
+sentence-transformers
+weaviate-client
+ipywidgets
+docling
+tqdm
