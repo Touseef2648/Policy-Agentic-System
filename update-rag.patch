@@ -1,0 +1,991 @@
+diff --git a/.gitignore b/.gitignore
+index 9ebeccc..c721a53 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -6,5 +6,5 @@ __pycache__/
+ data/processed/
+ data/raw/
+ *.ipynb_checkpoints
+-.env.example
++*.iml
+ 
+diff --git a/.idea/Policy-Agent-Framework.iml b/.idea/Policy-Agent-Framework.iml
+index 9a5d6d4..7dea252 100644
+--- a/.idea/Policy-Agent-Framework.iml
++++ b/.idea/Policy-Agent-Framework.iml
+@@ -4,7 +4,7 @@
+     <content url="file://$MODULE_DIR$">
+       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+     </content>
+-    <orderEntry type="jdk" jdkName="Python 3.12 (Policy-Agent-Framework)" jdkType="Python SDK" />
++    <orderEntry type="jdk" jdkName="Python 3.12 (Policy-Agentic-System)" jdkType="Python SDK" />
+     <orderEntry type="sourceFolder" forTests="false" />
+   </component>
+   <component name="PyDocumentationSettings">
+diff --git a/README.md b/README.md
+index 57556ce..994de75 100644
+--- a/README.md
++++ b/README.md
+@@ -1,76 +1,164 @@
+ # RAG Policy Assistant
+ 
++A retrieval-augmented generation (RAG) system for querying company policy documents. Documents are parsed with **Docling**, chunked, embedded with **BGE**, stored in **Weaviate**, and answered by an LLM via the **Hugging Face Inference API**. Includes a **Streamlit** chat frontend.
++
+ ## Project Structure
+ 
+ ```text
+ .
+-├── data/
+-│   ├── raw/
+-│   │   └── devsinc-data.zip
+-│   └── processed/
++├── main.py                          # CLI entrypoint — full pipeline
++├── docker-compose.yml               # Weaviate vector database
++├── requirements.txt
++├── README.md
+ ├── rag_project/
+ │   ├── __init__.py
+-│   ├── config.py
++│   ├── config.py                    # RAGConfig dataclass + env-var loader
+ │   ├── ingestion/
+-│   │   ├── preprocessing.py
+-│   │   ├── chunking.py
+-│   │   ├── embeddings.py
+-│   │   └── vector_store.py
++│   │   ├── __init__.py
++│   │   ├── preprocessing.py         # Preprocessor — unzip, parse, normalise
++│   │   ├── chunking.py              # DocumentChunker — section-based splitting
++│   │   ├── embeddings.py            # build_embeddings / build_reranker
++│   │   └── vector_store.py          # WeaviateRAGPipeline — store & query
+ │   └── retrieval/
+-│       └── assistant.py
+-├── main.py
+-├── docker-compose.yml
+-├── requirements.txt
+-├── .gitignore
+-└── README.md
++│       ├── __init__.py
++│       └── assistant.py             # RAGAssistant — LLM answer generation
++└── streamlit_app/
++    └── app.py                       # Streamlit chat UI (decoupled frontend)
+ ```
+ 
++## Prerequisites
++
++- **Python 3.10+**
++- **Docker** (for Weaviate)
++- A **Hugging Face** API token with Inference API access
++
+ ## Setup
+ 
+-1. Install Python dependencies:
++### 1. Install dependencies
+ 
+ ```bash
+ pip install -r requirements.txt
+ ```
+ 
+-2. Start Weaviate with Docker:
++### 2. Start Weaviate
+ 
+ ```bash
+ docker compose up -d
+ ```
+ 
+-3. Put your source ZIP at:
++This exposes Weaviate on HTTP port **8081** and gRPC port **50051** (configurable via env vars).
+ 
+-```text
+-data/raw/devsinc-data.zip
++### 3. Provide source documents
++
++Place your documents (`.pdf`, `.docx`, `.pptx`) or a ZIP archive at the path configured by `RAG_ZIP_PATH` (defaults to `devsinc-data` in the project root).
++
++### 4. Set your Hugging Face token
++
++```bash
++export HF_TOKEN="hf_your_token_here"
+ ```
+ 
+-## Optional Environment Variables
++## Running the CLI Pipeline
++
++```bash
++python main.py
++```
+ 
+-Set these in your shell before running:
++**What happens:**
+ 
+-- `HF_TOKEN` (recommended for Hugging Face API)
+-- `RAG_QUERY` (example: `What is the monthly limit for mobile allowance?`)
+-- `RAG_ZIP_PATH` (defaults to `data/raw/devsinc-data.zip`)
++1. Connects to Weaviate and checks if the collection already has data.
++2. If data exists → skips ingestion, reuses stored embeddings.
++3. If empty → runs full ingestion: preprocess → chunk → embed → store.
++4. Performs a hybrid retrieval query with reranking.
++5. Sends context + question to the LLM and prints the answer.
+ 
+-Example:
++**Force a full re-ingestion** (deletes existing collection first):
+ 
+ ```bash
+-export HF_TOKEN="your_token_here"
+-export RAG_QUERY="What is the monthly limit for mobile allowance?"
++RAG_FORCE_REINDEX=true python main.py
+ ```
+ 
+-## Run
++## Running the Streamlit UI
+ 
+ ```bash
+-python main.py
++streamlit run streamlit_app/app.py
+ ```
+ 
+-The script prints:
++The web app provides:
++
++- **Chat interface** — ask questions and get LLM-generated answers with source citations.
++- **Collection Manager** (sidebar) — view stored documents, delete individual documents, or wipe the entire database.
++
++> **Note:** The Streamlit app expects documents to already be ingested. Run `python main.py` first if the vector store is empty.
++
++## Environment Variables
++
++All settings have sensible defaults. Override any of them with environment variables:
++
++| Variable | Default | Description |
++|---|---|---|
++| `HF_TOKEN` | `""` | Hugging Face API token |
++| `RAG_ZIP_PATH` | `devsinc-data` | Path to source documents (directory or `.zip`) |
++| `RAG_QUERY` | `What is the monthly limit for mobile allowance?` | Default query for CLI mode |
++| `RAG_COLLECTION_NAME` | `PolicyDocuments` | Weaviate collection name |
++| `RAG_FORCE_REINDEX` | `false` | Set `true` to delete and re-ingest |
++| `RAG_HYBRID_SEARCH_LIMIT` | `10` | Candidates retrieved before reranking |
++| `RAG_HYBRID_ALPHA` | `0.65` | Hybrid search alpha (0 = keyword, 1 = vector) |
++| `RAG_RETRIEVAL_LIMIT` | `3` | Final results returned after reranking |
++| `RAG_NUM_RESULTS` | `4` | Chunks included in LLM context |
++| `RAG_LLM_TEMPERATURE` | `0.3` | LLM sampling temperature |
++| `RAG_LLM_MAX_TOKENS` | `1024` | Max tokens in LLM response |
++| `RAG_LLM_TOP_P` | `0.9` | Nucleus sampling threshold |
++| `RAG_LLM_MAX_RETRIES` | `3` | Retry count for failed LLM calls |
++| `RAG_LLM_RETRY_BACKOFF_SECONDS` | `1.5` | Base backoff between retries |
++| `RAG_CHUNK_MAX_SECTION_CHARS` | `2000` | Section size before splitting |
++| `RAG_SPLIT_CHUNK_SIZE` | `1000` | Sub-chunk size for large sections |
++| `RAG_SPLIT_CHUNK_OVERLAP` | `150` | Overlap between sub-chunks |
++| `RAG_WEAVIATE_PORT` | `8081` | Weaviate HTTP port |
++| `RAG_WEAVIATE_GRPC_PORT` | `50051` | Weaviate gRPC port |
++
++## Module Reference
++
++### `rag_project.config`
++
++- **`RAGConfig`** — Dataclass holding all pipeline settings with defaults.
++- **`load_config()`** — Creates a `RAGConfig` from environment variables.
++
++### `rag_project.ingestion.preprocessing`
++
++- **`Preprocessor(input_path)`** — Unzips archives, discovers supported files, parses them with Docling into structured sections, and normalises text.
++  - `.run()` — Executes the full preprocessing pipeline.
++  - `.get_documents()` — Returns the list of parsed document dicts.
++  - `.print_summary(index=0)` — Prints a debug summary for one document.
++
++### `rag_project.ingestion.chunking`
++
++- **`DocumentChunker(max_section_chars, split_chunk_size, split_chunk_overlap)`** — Converts preprocessed sections into chunk dicts with metadata.
++  - `.chunk_by_sections(processed_documents)` — Returns a flat list of chunks.
++  - `.preview_json(index=0)` — Prints chunk JSON for one document.
++
++### `rag_project.ingestion.embeddings`
++
++- **`build_embeddings(device="cpu")`** — Returns a `HuggingFaceEmbeddings` instance (`BAAI/bge-small-en-v1.5`).
++- **`build_reranker(device="cpu")`** — Returns a `SentenceTransformer` reranker (`BAAI/bge-reranker-base`).
++
++### `rag_project.ingestion.vector_store`
++
++- **`connect_local_weaviate(port, grpc_port)`** — Connects to the local Weaviate instance.
++- **`WeaviateRAGPipeline(client, embedding_model, ...)`** — Full vector-store interface:
++  - `.collection_exists()` / `.collection_has_data()` — Introspection helpers.
++  - `.create_collection()` / `.delete_collection()` — Schema management.
++  - `.store_chunks(chunks)` — Embeds and stores chunks.
++  - `.list_documents()` — Returns unique document file names.
++  - `.delete_document(file_name)` — Removes all chunks for one document.
++  - `.get_object_count()` — Returns total chunk count.
++  - `.query(user_query, limit)` — Hybrid search with optional reranking.
++
++### `rag_project.retrieval.assistant`
++
++- **`RAGAssistant(rag_pipeline, model_name, hf_token, ...)`** — Retrieves context and generates answers via the HF Inference API.
++  - `.answer(user_query, ...)` — End-to-end retrieval + generation. Automatically strips Qwen3 `<think>` blocks from the output.
+ 
+-- preprocessing output
+-- chunking output
+-- Weaviate stored JSON preview
+-- retrieval JSON for your query
+-- final assistant response
++### `streamlit_app.app`
+ 
++Standalone Streamlit application. Run with `streamlit run streamlit_app/app.py`. Uses `rag_project` as a library — no logic is duplicated.
+diff --git a/main.py b/main.py
+index 2ccd20e..040d6cb 100644
+--- a/main.py
++++ b/main.py
+@@ -10,19 +10,15 @@ from rag_project.ingestion.vector_store import WeaviateRAGPipeline, connect_loca
+ from rag_project.retrieval.assistant import RAGAssistant
+ 
+ 
+-def run_pipeline() -> None:
+-    """Run end-to-end RAG pipeline and print each stage output for debugging."""
+-    cfg = load_config()
+-
+-    print("[START] Full Policy RAG Pipeline")
+-
++def _ingest_documents(cfg, rag_pipeline):
++    """Run the full document ingestion pipeline: preprocess, chunk, embed, and store."""
+     print("[STEP 1] Preprocessing documents")
+     processor = Preprocessor(input_path=cfg.zip_path)
+     processed_docs = processor.run().get_documents()
+     print(f"[STEP 1] Completed: {len(processed_docs)} documents processed")
+     if not processed_docs:
+         print("[STOP] No documents were processed. Check input path and document formats.")
+-        return
++        return False
+     processor.print_summary(index=0)
+ 
+     print("[STEP 2] Chunking parsed sections")
+@@ -35,18 +31,33 @@ def run_pipeline() -> None:
+     print(f"[STEP 2] Completed: {len(final_chunks)} chunks created")
+     if not final_chunks:
+         print("[STOP] No chunks were created from processed documents.")
+-        return
++        return False
+     chunker.preview_json(index=0)
+ 
+-    print("[STEP 3] Initializing embeddings and reranker")
++    print("[STEP 3] Creating collection and storing chunks")
++    rag_pipeline.create_collection()
++    rag_pipeline.store_chunks(final_chunks)
++    rag_pipeline.preview_stored_json(limit=5)
++    print("[STEP 3] Completed")
++    return True
++
++
++def run_pipeline() -> None:
++    """Run end-to-end RAG pipeline, reusing stored embeddings when available."""
++    cfg = load_config()
++
++    print("[START] Full Policy RAG Pipeline")
++
++    print("[INIT] Initializing embeddings and reranker")
+     embeddings = build_embeddings(device="cpu")
+     reranker = build_reranker(device="cpu")
+-    print("[STEP 3] Completed")
++    print("[INIT] Models loaded")
+ 
+-    print("[STEP 4] Connecting Weaviate and storing chunks")
++    print("[INIT] Connecting to Weaviate")
+     client = connect_local_weaviate(
+         port=cfg.weaviate_port, grpc_port=cfg.weaviate_grpc_port
+     )
++
+     rag_pipeline = WeaviateRAGPipeline(
+         client=client,
+         embedding_model=embeddings,
+@@ -55,21 +66,34 @@ def run_pipeline() -> None:
+         hybrid_search_limit=cfg.hybrid_search_limit,
+         hybrid_alpha=cfg.hybrid_alpha,
+     )
+-    rag_pipeline.create_collection()
+-    rag_pipeline.store_chunks(final_chunks)
+-    rag_pipeline.preview_stored_json(limit=5)
+-    print("[STEP 4] Completed")
+ 
+-    print("[STEP 5] Running retrieval query")
++    if cfg.force_reindex:
++        print("[INFO] Force reindex requested — deleting existing collection")
++        rag_pipeline.delete_collection()
++
++    needs_ingestion = not rag_pipeline.collection_has_data()
++
++    if needs_ingestion:
++        print("[INFO] No existing data found — running full ingestion pipeline")
++        if not _ingest_documents(cfg, rag_pipeline):
++            client.close()
++            return
++    else:
++        print(
++            f"[INFO] Reusing existing embeddings from collection "
++            f"'{cfg.collection_name}' — skipping preprocessing, chunking, and embedding"
++        )
++
++    print("[QUERY] Running retrieval query")
+     print(f"[QUERY] User query: {cfg.query_text}")
+     results = rag_pipeline.query(cfg.query_text, limit=cfg.retrieval_limit)
+     print("[QUERY] Retrieval response:")
+     print(json.dumps(results, indent=2))
+ 
+-    print("[STEP 6] Generating final assistant answer")
++    print("[LLM] Generating final assistant answer")
+     assistant = RAGAssistant(
+         rag_pipeline=rag_pipeline,
+-        model_name="Qwen/Qwen3-30B-A3B-Instruct",
++        model_name="Qwen/Qwen3-30B-A3B",
+         hf_token=cfg.hf_token,
+         temperature=cfg.llm_temperature,
+         max_tokens=cfg.llm_max_tokens,
+diff --git a/rag_project/config.py b/rag_project/config.py
+index 38e8195..d5dd525 100644
+--- a/rag_project/config.py
++++ b/rag_project/config.py
+@@ -12,11 +12,12 @@ class RAGConfig:
+     hf_token: str = ""
+     query_text: str = "What is the monthly limit for mobile allowance?"
+     collection_name: str = "PolicyDocuments"
++    force_reindex: bool = False
+ 
+     hybrid_search_limit: int = 10
+     hybrid_alpha: float = 0.65
+     retrieval_limit: int = 3
+-    num_results: int = 3
++    num_results: int = 4
+ 
+     llm_temperature: float = 0.3
+     llm_max_tokens: int = 1024
+@@ -33,27 +34,40 @@ class RAGConfig:
+ 
+ 
+ def load_config() -> RAGConfig:
+-    """Load RAG config from environment variables."""
++    """Load RAG config from environment variables with sensible defaults."""
+     return RAGConfig(
+-        zip_path=os.getenv("RAG_ZIP_PATH", "devsinc-data"),
+-        hf_token=os.getenv("HF_TOKEN", ""),
+-        query_text=os.getenv(
+-            "RAG_QUERY", "What is the monthly limit for mobile allowance?"
+-        ),
+-        collection_name=os.getenv("RAG_COLLECTION_NAME", "PolicyDocuments"),
+-        hybrid_search_limit=int(os.getenv("RAG_HYBRID_SEARCH_LIMIT", "10")),
+-        hybrid_alpha=float(os.getenv("RAG_HYBRID_ALPHA", "0.65")),
+-        retrieval_limit=int(os.getenv("RAG_RETRIEVAL_LIMIT", "3")),
+-        num_results=int(os.getenv("RAG_NUM_RESULTS", "4")),
+-        llm_temperature=float(os.getenv("RAG_LLM_TEMPERATURE", "0.3")),
+-        llm_max_tokens=int(os.getenv("RAG_LLM_MAX_TOKENS", "1024")),
+-        llm_top_p=float(os.getenv("RAG_LLM_TOP_P", "0.9")),
+-        llm_max_retries=int(os.getenv("RAG_LLM_MAX_RETRIES", "3")),
+-        llm_retry_backoff=float(os.getenv("RAG_LLM_RETRY_BACKOFF_SECONDS", "1.5")),
+-        chunk_max_chars=int(os.getenv("RAG_CHUNK_MAX_SECTION_CHARS", "2000")),
+-        split_chunk_size=int(os.getenv("RAG_SPLIT_CHUNK_SIZE", "1000")),
+-        split_chunk_overlap=int(os.getenv("RAG_SPLIT_CHUNK_OVERLAP", "150")),
+-        weaviate_port=int(os.getenv("RAG_WEAVIATE_PORT", "8081")),
+-        weaviate_grpc_port=int(os.getenv("RAG_WEAVIATE_GRPC_PORT", "50051")),
++        zip_path=os.getenv("RAG_ZIP_PATH", RAGConfig.zip_path),
++        hf_token=os.getenv("HF_TOKEN", RAGConfig.hf_token),
++        query_text=os.getenv("RAG_QUERY", RAGConfig.query_text),
++        collection_name=os.getenv(
++            "RAG_COLLECTION_NAME", RAGConfig.collection_name),
++        force_reindex=os.getenv("RAG_FORCE_REINDEX",
++                                "false").lower() in ("true", "1", "yes"),
++        hybrid_search_limit=int(
++            os.getenv("RAG_HYBRID_SEARCH_LIMIT", str(RAGConfig.hybrid_search_limit))),
++        hybrid_alpha=float(os.getenv("RAG_HYBRID_ALPHA",
++                           str(RAGConfig.hybrid_alpha))),
++        retrieval_limit=int(os.getenv("RAG_RETRIEVAL_LIMIT",
++                            str(RAGConfig.retrieval_limit))),
++        num_results=int(os.getenv("RAG_NUM_RESULTS",
++                        str(RAGConfig.num_results))),
++        llm_temperature=float(
++            os.getenv("RAG_LLM_TEMPERATURE", str(RAGConfig.llm_temperature))),
++        llm_max_tokens=int(os.getenv("RAG_LLM_MAX_TOKENS",
++                           str(RAGConfig.llm_max_tokens))),
++        llm_top_p=float(os.getenv("RAG_LLM_TOP_P", str(RAGConfig.llm_top_p))),
++        llm_max_retries=int(os.getenv("RAG_LLM_MAX_RETRIES",
++                            str(RAGConfig.llm_max_retries))),
++        llm_retry_backoff=float(
++            os.getenv("RAG_LLM_RETRY_BACKOFF_SECONDS", str(RAGConfig.llm_retry_backoff))),
++        chunk_max_chars=int(
++            os.getenv("RAG_CHUNK_MAX_SECTION_CHARS", str(RAGConfig.chunk_max_chars))),
++        split_chunk_size=int(
++            os.getenv("RAG_SPLIT_CHUNK_SIZE", str(RAGConfig.split_chunk_size))),
++        split_chunk_overlap=int(
++            os.getenv("RAG_SPLIT_CHUNK_OVERLAP", str(RAGConfig.split_chunk_overlap))),
++        weaviate_port=int(os.getenv("RAG_WEAVIATE_PORT",
++                          str(RAGConfig.weaviate_port))),
++        weaviate_grpc_port=int(
++            os.getenv("RAG_WEAVIATE_GRPC_PORT", str(RAGConfig.weaviate_grpc_port))),
+     )
+-
+diff --git a/rag_project/ingestion/embeddings.py b/rag_project/ingestion/embeddings.py
+index 59dbd1e..a23d934 100644
+--- a/rag_project/ingestion/embeddings.py
++++ b/rag_project/ingestion/embeddings.py
+@@ -1,14 +1,11 @@
+ """Embeddings and reranker initialization module."""
+ 
+-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+ from langchain_huggingface import HuggingFaceEmbeddings
+ from sentence_transformers import SentenceTransformer
+ 
+ 
+ def build_embeddings(device: str = "cpu") -> HuggingFaceEmbeddings:
+-    """
+-    Create embedding model used for vector generation.
+-    """
++    """Create embedding model used for vector generation."""
+     return HuggingFaceEmbeddings(
+         model_name="BAAI/bge-small-en-v1.5",
+         model_kwargs={"device": device},
+@@ -16,9 +13,6 @@ def build_embeddings(device: str = "cpu") -> HuggingFaceEmbeddings:
+     )
+ 
+ 
+-def build_reranker(device: str = "cpu"):
+-    """
+-    Create cross-encoder reranker model.
+-    """
+-    return SentenceTransformer("BAAI/bge-reranker-base")
+-
++def build_reranker(device: str = "cpu") -> SentenceTransformer:
++    """Create cross-encoder reranker model."""
++    return SentenceTransformer("BAAI/bge-reranker-base", device=device)
+diff --git a/rag_project/ingestion/preprocessing.py b/rag_project/ingestion/preprocessing.py
+index 6d36b69..6b28c33 100644
+--- a/rag_project/ingestion/preprocessing.py
++++ b/rag_project/ingestion/preprocessing.py
+@@ -10,6 +10,12 @@ from docling.document_converter import DocumentConverter
+ from docling_core.types.doc.labels import DocItemLabel
+ 
+ 
++_SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".pptx")
++_JUNK_FILENAME_PREFIXES = (".DS_Store", "Thumbs.db", "._")
++_BOILERPLATE_HEADER = "Policy & Standard Operating Procedure"
++_CONTENT_LABELS = {DocItemLabel.PARAGRAPH, DocItemLabel.LIST_ITEM, DocItemLabel.TEXT}
++
++
+ class Preprocessor:
+     """
+     Preprocess policy documents using Docling.
+@@ -72,7 +78,7 @@ class Preprocessor:
+         self.files = []
+         for root, _, filenames in os.walk(self.extracted_dir):
+             for filename in filenames:
+-                if filename.lower().endswith((".pdf", ".docx", ".pptx")):
++                if filename.lower().endswith(_SUPPORTED_EXTENSIONS):
+                     self.files.append(os.path.join(root, filename))
+ 
+         print(f"[INFO] Found {len(self.files)} supported documents")
+@@ -82,13 +88,12 @@ class Preprocessor:
+         """
+         Remove junk/system files from discovered file list.
+         """
+-        junk_patterns = [".DS_Store", "Thumbs.db", "._"]
+         self.files = [
+             f
+             for f in self.files
+             if not any(
+-                os.path.basename(f).startswith(pattern) or os.path.basename(f) == pattern
+-                for pattern in junk_patterns
++                os.path.basename(f).startswith(p) or os.path.basename(f) == p
++                for p in _JUNK_FILENAME_PREFIXES
+             )
+         ]
+         print(f"[INFO] Files after junk cleanup: {len(self.files)}")
+@@ -112,7 +117,6 @@ class Preprocessor:
+         Parse document structure into title/headings/sections using Docling.
+         """
+         self.documents = []
+-        boilerplate_header = "Policy & Standard Operating Procedure"
+ 
+         for file_path in self.files:
+             filename = os.path.basename(file_path)
+@@ -123,19 +127,19 @@ class Preprocessor:
+                 doc = result.document
+ 
+                 extracted_title = None
+-                headings_list = []
+-                sections = []
++                headings_list: List[str] = []
++                sections: List[Dict] = []
+                 current_heading = "General Information"
+-                current_content = []
++                current_content: List[str] = []
+ 
+                 for item, _level in doc.iterate_items():
+                     if item.label == DocItemLabel.TITLE:
+-                        if item.text.strip() == boilerplate_header:
++                        if item.text.strip() == _BOILERPLATE_HEADER:
+                             continue
+                         extracted_title = self._clean_title(item.text)
+                         current_heading = extracted_title
+                     elif item.label == DocItemLabel.SECTION_HEADER:
+-                        if item.text.strip() == boilerplate_header:
++                        if item.text.strip() == _BOILERPLATE_HEADER:
+                             continue
+                         if extracted_title and item.text.strip() == extracted_title:
+                             continue
+@@ -151,11 +155,7 @@ class Preprocessor:
+                         headings_list.append(item.text)
+                     elif item.label == DocItemLabel.TABLE:
+                         current_content.append(item.export_to_markdown(doc=doc))
+-                    elif item.label in [
+-                        DocItemLabel.PARAGRAPH,
+-                        DocItemLabel.LIST_ITEM,
+-                        DocItemLabel.TEXT,
+-                    ]:
++                    elif item.label in _CONTENT_LABELS:
+                         current_content.append(item.text)
+ 
+                 if current_content:
+diff --git a/rag_project/ingestion/vector_store.py b/rag_project/ingestion/vector_store.py
+index 8bb642a..a446ffc 100644
+--- a/rag_project/ingestion/vector_store.py
++++ b/rag_project/ingestion/vector_store.py
+@@ -1,10 +1,11 @@
+ """Weaviate RAG pipeline module."""
+ 
+ import json
+-from typing import Dict, List
++from typing import Dict, List, Set
+ 
+ import weaviate
+ from weaviate.classes.config import Configure, DataType, Property
++from weaviate.classes.query import Filter
+ 
+ 
+ class WeaviateRAGPipeline:
+@@ -39,11 +40,63 @@ class WeaviateRAGPipeline:
+         self.hybrid_search_limit = hybrid_search_limit
+         self.hybrid_alpha = hybrid_alpha
+ 
++    def collection_exists(self) -> bool:
++        """Check whether the configured collection exists in Weaviate."""
++        return self.client.collections.exists(self.collection_name)
++
++    def collection_has_data(self) -> bool:
++        """Return True if the collection exists and contains at least one object."""
++        if not self.collection_exists():
++            return False
++        collection = self.client.collections.use(self.collection_name)
++        response = collection.aggregate.over_all(total_count=True)
++        count = response.total_count or 0
++        print(f"[INFO] Collection '{self.collection_name}' has {count} objects")
++        return count > 0
++
++    def delete_collection(self) -> None:
++        """Delete the collection and all its data from Weaviate."""
++        if self.collection_exists():
++            self.client.collections.delete(self.collection_name)
++            print(f"[STEP] Collection '{self.collection_name}' deleted")
++        else:
++            print(f"[INFO] Collection '{self.collection_name}' does not exist, nothing to delete")
++
++    def get_object_count(self) -> int:
++        """Return the total number of objects in the collection."""
++        if not self.collection_exists():
++            return 0
++        collection = self.client.collections.use(self.collection_name)
++        response = collection.aggregate.over_all(total_count=True)
++        return response.total_count or 0
++
++    def list_documents(self) -> List[str]:
++        """Return a sorted list of unique file_name values stored in the collection."""
++        if not self.collection_exists():
++            return []
++        collection = self.client.collections.use(self.collection_name)
++        file_names: Set[str] = set()
++        for item in collection.iterator(return_properties=["file_name"]):
++            file_names.add(item.properties["file_name"])
++        return sorted(file_names)
++
++    def delete_document(self, file_name: str) -> int:
++        """Delete all chunks belonging to a specific document and return count deleted."""
++        if not self.collection_exists():
++            return 0
++        collection = self.client.collections.use(self.collection_name)
++        result = collection.data.delete_many(
++            where=Filter.by_property("file_name").equal(file_name)
++        )
++        deleted = result.successful
++        print(f"[STEP] Deleted {deleted} chunks for document '{file_name}'")
++        return deleted
++
+     def create_collection(self) -> None:
+         """
+         Create collection schema if it does not already exist.
+         """
+-        if self.client.collections.exists(self.collection_name):
++        if self.collection_exists():
+             print(f"[INFO] Collection '{self.collection_name}' already exists")
+             return
+ 
+@@ -116,56 +169,43 @@ class WeaviateRAGPipeline:
+         )
+ 
+         if self.reranker:
+-
+             passages = [obj.properties["text"] for obj in results.objects]
+-            # pairs = [[user_query, passage] for passage in passages]
+-            # print('PAIRS: ', pairs)
+-
+-            scores = []
+-
+-            for passage in passages:
+-                scores.append(
+-                    self.reranker.similarity(query_vector, self.embeddings.embed_query(passage)).item()
+-                )
++            scores = [
++                self.reranker.similarity(
++                    query_vector, self.embeddings.embed_query(passage)
++                ).item()
++                for passage in passages
++            ]
+             scored_results = sorted(
+                 zip(scores, results.objects), key=lambda item: item[0], reverse=True
+             )
+-
+-            print('\n')
+-            # print('scored_results: ', scored_results)
+             final_objects = [obj for _score, obj in scored_results[:limit]]
+         else:
+             final_objects = results.objects[:limit]
+ 
+-        print('\n')
+-        print('final_objects: ',final_objects)
+         return self._format_results(final_objects)
+ 
+     def _format_results(self, objects) -> List[Dict]:
+-        """
+-        Format Weaviate objects into the JSON structure used in notebook code.
+-        """
+-        formatted = []
+-        for obj in objects:
+-            formatted.append(
+-                {
+-                    "metadata": {
+-                        "text": obj.properties["text"],
+-                        "title": obj.properties["title"],
+-                        "heading": obj.properties["heading"],
+-                        "chunk_index": obj.properties["chunk_index"],
+-                        "total_chunks": obj.properties["total_chunks"],
+-                        "file_name": obj.properties["file_name"],
+-                    },
+-                    "embedding": (
+-                        obj.vector.get("default")
+-                        if isinstance(getattr(obj, "vector", None), dict)
+-                        else getattr(obj, "vector", None)
+-                    ),
+-                    "uuid": str(obj.uuid),
+-                }
+-            )
+-        return formatted
++        """Format Weaviate objects into a standard dict structure."""
++        return [
++            {
++                "metadata": {
++                    "text": obj.properties["text"],
++                    "title": obj.properties["title"],
++                    "heading": obj.properties["heading"],
++                    "chunk_index": obj.properties["chunk_index"],
++                    "total_chunks": obj.properties["total_chunks"],
++                    "file_name": obj.properties["file_name"],
++                },
++                "embedding": (
++                    obj.vector.get("default")
++                    if isinstance(getattr(obj, "vector", None), dict)
++                    else getattr(obj, "vector", None)
++                ),
++                "uuid": str(obj.uuid),
++            }
++            for obj in objects
++        ]
+ 
+ 
+ def connect_local_weaviate(port: int = 8081, grpc_port: int = 50051) -> weaviate.WeaviateClient:
+diff --git a/rag_project/retrieval/assistant.py b/rag_project/retrieval/assistant.py
+index 0fd30df..e9fc0c8 100644
+--- a/rag_project/retrieval/assistant.py
++++ b/rag_project/retrieval/assistant.py
+@@ -1,5 +1,6 @@
+ """LLM assistant module for RAG-based QA."""
+ 
++import re
+ import time
+ from typing import Dict, List, Optional
+ 
+@@ -13,16 +14,22 @@ DEFAULT_SYSTEM_PROMPT = (
+     "Always be professional, concise, and cite the exact section/title when possible."
+ )
+ 
++_THINKING_TAG_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
++_CONTEXT_SEPARATOR = "\n\n" + "=" * 60 + "\n\n"
++
++
++def _strip_thinking(text: str) -> str:
++    """Remove <think>...</think> blocks that Qwen3 models emit before the answer."""
++    return _THINKING_TAG_RE.sub("", text).strip()
++
+ 
+ class RAGAssistant:
+-    """
+-    RAG-powered assistant that uses Weaviate retrieval plus LLM generation.
+-    """
++    """RAG-powered assistant that uses Weaviate retrieval plus LLM generation."""
+ 
+     def __init__(
+         self,
+         rag_pipeline,
+-        model_name: str = "Qwen/Qwen3-30B-A3B-Instruct",
++        model_name: str = "Qwen/Qwen3-30B-A3B",
+         hf_token: Optional[str] = None,
+         temperature: float = 0.3,
+         max_tokens: int = 1024,
+@@ -60,16 +67,14 @@ class RAGAssistant:
+         print(f"[STEP] RAGAssistant initialized with model: {model_name}")
+ 
+     def _build_rag_context(self, query: str, num_results: int = 4) -> str:
+-        """
+-        Retrieve top reranked chunks and compose context block.
+-        """
++        """Retrieve top reranked chunks and compose context block."""
+         results: List[Dict] = self.rag_pipeline.query(query, limit=num_results)
+         context_parts = []
+         for index, res in enumerate(results, start=1):
+             meta = res["metadata"]
+             source = f"{meta['title']} -> {meta['heading']}"
+             context_parts.append(f"[Source {index}] {source}\n{meta['text']}")
+-        return "\n\n" + "=" * 60 + "\n\n".join(context_parts)
++        return _CONTEXT_SEPARATOR.join(context_parts)
+ 
+     def answer(
+         self,
+@@ -79,9 +84,7 @@ class RAGAssistant:
+         temperature: Optional[float] = None,
+         max_tokens: Optional[int] = None,
+     ) -> str:
+-        """
+-        Answer question using retrieved policy context and chat completion.
+-        """
++        """Answer question using retrieved policy context and chat completion."""
+         effective_num_results = num_results or self.default_num_results
+         context = self._build_rag_context(user_query, num_results=effective_num_results)
+         system_prompt = custom_system_prompt or self.system_prompt
+@@ -107,7 +110,8 @@ class RAGAssistant:
+                     top_p=self.top_p,
+                     stream=False,
+                 )
+-                return response.choices[0].message.content.strip()
++                raw = response.choices[0].message.content.strip()
++                return _strip_thinking(raw)
+             except Exception as error:
+                 if attempt >= self.max_retries:
+                     raise RuntimeError(
+@@ -121,4 +125,3 @@ class RAGAssistant:
+                 time.sleep(wait_seconds)
+ 
+         return ""
+-
+diff --git a/requirements.txt b/requirements.txt
+index 428a72b..eef7d48 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,6 +1,7 @@
+ pandas
+ torch
+ transformers
++huggingface-hub
+ langchain
+ langchain-community
+ langchain-weaviate
+@@ -12,3 +13,4 @@ weaviate-client
+ ipywidgets
+ docling
+ tqdm
++streamlit
+diff --git a/streamlit_app/app.py b/streamlit_app/app.py
+new file mode 100644
+index 0000000..e2e084a
+--- /dev/null
++++ b/streamlit_app/app.py
+@@ -0,0 +1,182 @@
++"""Streamlit frontend for the Policy RAG Assistant."""
++
++import sys
++from pathlib import Path
++
++# Allow imports from the project root when running via `streamlit run streamlit_app/app.py`
++sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
++
++import streamlit as st  # noqa: E402
++
++from rag_project.config import load_config  # noqa: E402
++from rag_project.ingestion.embeddings import build_embeddings, build_reranker  # noqa: E402
++from rag_project.ingestion.vector_store import (  # noqa: E402
++    WeaviateRAGPipeline,
++    connect_local_weaviate,
++)
++from rag_project.retrieval.assistant import RAGAssistant  # noqa: E402
++
++# ---------------------------------------------------------------------------
++# Page config
++# ---------------------------------------------------------------------------
++st.set_page_config(
++    page_title="Policy Assistant",
++    page_icon="📋",
++    layout="wide",
++    initial_sidebar_state="expanded",
++)
++
++
++# ---------------------------------------------------------------------------
++# Cached resource loaders — expensive objects created once per session
++# ---------------------------------------------------------------------------
++@st.cache_resource(show_spinner="Loading embedding models...")
++def _load_models():
++    embeddings = build_embeddings(device="cpu")
++    reranker = build_reranker(device="cpu")
++    return embeddings, reranker
++
++
++@st.cache_resource(show_spinner="Connecting to Weaviate...")
++def _connect_weaviate(_cfg):
++    return connect_local_weaviate(port=_cfg.weaviate_port, grpc_port=_cfg.weaviate_grpc_port)
++
++
++@st.cache_resource(show_spinner="Initializing LLM assistant...")
++def _load_assistant(_pipeline, _cfg):
++    return RAGAssistant(
++        rag_pipeline=_pipeline,
++        model_name="Qwen/Qwen3-30B-A3B",
++        hf_token=_cfg.hf_token,
++        temperature=_cfg.llm_temperature,
++        max_tokens=_cfg.llm_max_tokens,
++        top_p=_cfg.llm_top_p,
++        default_num_results=_cfg.num_results,
++        max_retries=_cfg.llm_max_retries,
++        retry_backoff_seconds=_cfg.llm_retry_backoff,
++    )
++
++
++def _build_pipeline(client, embeddings, reranker, cfg):
++    return WeaviateRAGPipeline(
++        client=client,
++        embedding_model=embeddings,
++        reranker_model=reranker,
++        collection_name=cfg.collection_name,
++        hybrid_search_limit=cfg.hybrid_search_limit,
++        hybrid_alpha=cfg.hybrid_alpha,
++    )
++
++
++# ---------------------------------------------------------------------------
++# Bootstrap
++# ---------------------------------------------------------------------------
++cfg = load_config()
++embeddings, reranker = _load_models()
++client = _connect_weaviate(cfg)
++pipeline = _build_pipeline(client, embeddings, reranker, cfg)
++assistant = _load_assistant(pipeline, cfg)
++
++# ---------------------------------------------------------------------------
++# Session state
++# ---------------------------------------------------------------------------
++if "messages" not in st.session_state:
++    st.session_state.messages = []
++
++# ---------------------------------------------------------------------------
++# Sidebar — collection management
++# ---------------------------------------------------------------------------
++with st.sidebar:
++    st.header("Collection Manager")
++
++    has_data = pipeline.collection_has_data()
++    total_chunks = pipeline.get_object_count()
++    documents = pipeline.list_documents()
++
++    col1, col2 = st.columns(2)
++    col1.metric("Total chunks", total_chunks)
++    col2.metric("Documents", len(documents))
++
++    if documents:
++        with st.expander("Stored documents", expanded=False):
++            for doc in documents:
++                st.text(doc)
++
++    st.divider()
++
++    st.subheader("Clear Entire Database")
++    if st.button("Delete all data", type="primary", use_container_width=True):
++        pipeline.delete_collection()
++        st.success("Collection deleted. Re-run ingestion via CLI to repopulate.")
++        st.rerun()
++
++    st.divider()
++
++    st.subheader("Delete a Document")
++    if documents:
++        selected_doc = st.selectbox("Select document", documents)
++        if st.button("Delete selected document", use_container_width=True):
++            deleted = pipeline.delete_document(selected_doc)
++            st.success(f"Removed {deleted} chunks for **{selected_doc}**")
++            st.rerun()
++    else:
++        st.info("No documents in the collection.")
++
++    st.divider()
++
++    if st.button("Clear chat history", use_container_width=True):
++        st.session_state.messages = []
++        st.rerun()
++
++# ---------------------------------------------------------------------------
++# Main area — chat interface
++# ---------------------------------------------------------------------------
++st.title("📋 Policy Assistant")
++
++if not has_data:
++    st.warning(
++        "The vector store is empty. Run the ingestion pipeline first:\n\n"
++        "```bash\npython main.py\n```"
++    )
++
++for msg in st.session_state.messages:
++    with st.chat_message(msg["role"]):
++        st.markdown(msg["content"])
++        if msg.get("sources"):
++            with st.expander("Sources"):
++                for src in msg["sources"]:
++                    st.markdown(f"**{src['title']}** — {src['heading']}  \n`{src['file_name']}`")
++
++if prompt := st.chat_input("Ask a question about company policies..."):
++    st.session_state.messages.append({"role": "user", "content": prompt})
++    with st.chat_message("user"):
++        st.markdown(prompt)
++
++    with st.chat_message("assistant"):
++        if not pipeline.collection_has_data():
++            response_text = "The vector store is empty. Please ingest documents first."
++            sources = []
++        else:
++            with st.spinner("Searching policies and generating answer..."):
++                retrieval_results = pipeline.query(prompt, limit=cfg.retrieval_limit)
++                sources = [
++                    {
++                        "title": r["metadata"]["title"],
++                        "heading": r["metadata"]["heading"],
++                        "file_name": r["metadata"]["file_name"],
++                    }
++                    for r in retrieval_results
++                ]
++                response_text = assistant.answer(
++                    user_query=prompt, num_results=cfg.num_results
++                )
++
++        st.markdown(response_text)
++        if sources:
++            with st.expander("Sources"):
++                for src in sources:
++                    st.markdown(f"**{src['title']}** — {src['heading']}  \n`{src['file_name']}`")
++
++    st.session_state.messages.append(
++        {"role": "assistant", "content": response_text, "sources": sources}
++    )

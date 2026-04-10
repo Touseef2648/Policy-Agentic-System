@@ -1,14 +1,11 @@
 """Embeddings and reranker initialization module."""
 
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 from langchain_huggingface import HuggingFaceEmbeddings
 from sentence_transformers import SentenceTransformer
 
 
 def build_embeddings(device: str = "cpu") -> HuggingFaceEmbeddings:
-    """
-    Create embedding model used for vector generation.
-    """
+    """Create embedding model used for vector generation."""
     return HuggingFaceEmbeddings(
         model_name="BAAI/bge-small-en-v1.5",
         model_kwargs={"device": device},
@@ -16,9 +13,6 @@ def build_embeddings(device: str = "cpu") -> HuggingFaceEmbeddings:
     )
 
 
-def build_reranker(device: str = "cpu"):
-    """
-    Create cross-encoder reranker model.
-    """
-    return SentenceTransformer("BAAI/bge-reranker-base")
-
+def build_reranker(device: str = "cpu") -> SentenceTransformer:
+    """Create cross-encoder reranker model."""
+    return SentenceTransformer("BAAI/bge-reranker-base", device=device)

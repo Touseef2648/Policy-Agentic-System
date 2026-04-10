@@ -1,10 +1,11 @@
 """Weaviate RAG pipeline module."""
 
 import json
-from typing import Dict, List
+from typing import Dict, List, Set
 
 import weaviate
 from weaviate.classes.config import Configure, DataType, Property
+from weaviate.classes.query import Filter
 
 
 class WeaviateRAGPipeline:
@@ -39,11 +40,63 @@ class WeaviateRAGPipeline:
         self.hybrid_search_limit = hybrid_search_limit
         self.hybrid_alpha = hybrid_alpha
 
+    def collection_exists(self) -> bool:
+        """Check whether the configured collection exists in Weaviate."""
+        return self.client.collections.exists(self.collection_name)
+
+    def collection_has_data(self) -> bool:
+        """Return True if the collection exists and contains at least one object."""
+        if not self.collection_exists():
+            return False
+        collection = self.client.collections.use(self.collection_name)
+        response = collection.aggregate.over_all(total_count=True)
+        count = response.total_count or 0
+        print(f"[INFO] Collection '{self.collection_name}' has {count} objects")
+        return count > 0
+
+    def delete_collection(self) -> None:
+        """Delete the collection and all its data from Weaviate."""
+        if self.collection_exists():
+            self.client.collections.delete(self.collection_name)
+            print(f"[STEP] Collection '{self.collection_name}' deleted")
+        else:
+            print(f"[INFO] Collection '{self.collection_name}' does not exist, nothing to delete")
+
+    def get_object_count(self) -> int:
+        """Return the total number of objects in the collection."""
+        if not self.collection_exists():
+            return 0
+        collection = self.client.collections.use(self.collection_name)
+        response = collection.aggregate.over_all(total_count=True)
+        return response.total_count or 0
+
+    def list_documents(self) -> List[str]:
+        """Return a sorted list of unique file_name values stored in the collection."""
+        if not self.collection_exists():
+            return []
+        collection = self.client.collections.use(self.collection_name)
+        file_names: Set[str] = set()
+        for item in collection.iterator(return_properties=["file_name"]):
+            file_names.add(item.properties["file_name"])
+        return sorted(file_names)
+
+    def delete_document(self, file_name: str) -> int:
+        """Delete all chunks belonging to a specific document and return count deleted."""
+        if not self.collection_exists():
+            return 0
+        collection = self.client.collections.use(self.collection_name)
+        result = collection.data.delete_many(
+            where=Filter.by_property("file_name").equal(file_name)
+        )
+        deleted = result.successful
+        print(f"[STEP] Deleted {deleted} chunks for document '{file_name}'")
+        return deleted
+
     def create_collection(self) -> None:
         """
         Create collection schema if it does not already exist.
         """
-        if self.client.collections.exists(self.collection_name):
+        if self.collection_exists():
             print(f"[INFO] Collection '{self.collection_name}' already exists")
             return
 
@@ -116,56 +169,43 @@ class WeaviateRAGPipeline:
         )
 
         if self.reranker:
-
             passages = [obj.properties["text"] for obj in results.objects]
-            # pairs = [[user_query, passage] for passage in passages]
-            # print('PAIRS: ', pairs)
-
-            scores = []
-
-            for passage in passages:
-                scores.append(
-                    self.reranker.similarity(query_vector, self.embeddings.embed_query(passage)).item()
-                )
+            scores = [
+                self.reranker.similarity(
+                    query_vector, self.embeddings.embed_query(passage)
+                ).item()
+                for passage in passages
+            ]
             scored_results = sorted(
                 zip(scores, results.objects), key=lambda item: item[0], reverse=True
             )
-
-            print('\n')
-            # print('scored_results: ', scored_results)
             final_objects = [obj for _score, obj in scored_results[:limit]]
         else:
             final_objects = results.objects[:limit]
 
-        print('\n')
-        print('final_objects: ',final_objects)
         return self._format_results(final_objects)
 
     def _format_results(self, objects) -> List[Dict]:
-        """
-        Format Weaviate objects into the JSON structure used in notebook code.
-        """
-        formatted = []
-        for obj in objects:
-            formatted.append(
-                {
-                    "metadata": {
-                        "text": obj.properties["text"],
-                        "title": obj.properties["title"],
-                        "heading": obj.properties["heading"],
-                        "chunk_index": obj.properties["chunk_index"],
-                        "total_chunks": obj.properties["total_chunks"],
-                        "file_name": obj.properties["file_name"],
-                    },
-                    "embedding": (
-                        obj.vector.get("default")
-                        if isinstance(getattr(obj, "vector", None), dict)
-                        else getattr(obj, "vector", None)
-                    ),
-                    "uuid": str(obj.uuid),
-                }
-            )
-        return formatted
+        """Format Weaviate objects into a standard dict structure."""
+        return [
+            {
+                "metadata": {
+                    "text": obj.properties["text"],
+                    "title": obj.properties["title"],
+                    "heading": obj.properties["heading"],
+                    "chunk_index": obj.properties["chunk_index"],
+                    "total_chunks": obj.properties["total_chunks"],
+                    "file_name": obj.properties["file_name"],
+                },
+                "embedding": (
+                    obj.vector.get("default")
+                    if isinstance(getattr(obj, "vector", None), dict)
+                    else getattr(obj, "vector", None)
+                ),
+                "uuid": str(obj.uuid),
+            }
+            for obj in objects
+        ]
 
 
 def connect_local_weaviate(port: int = 8081, grpc_port: int = 50051) -> weaviate.WeaviateClient:

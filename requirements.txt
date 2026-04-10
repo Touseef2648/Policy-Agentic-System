@@ -1,6 +1,7 @@
 pandas
 torch
 transformers
+huggingface-hub
 langchain
 langchain-community
 langchain-weaviate
@@ -12,3 +13,4 @@ weaviate-client
 ipywidgets
 docling
 tqdm
+streamlit

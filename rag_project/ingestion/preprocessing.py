@@ -10,6 +10,12 @@ from docling.document_converter import DocumentConverter
 from docling_core.types.doc.labels import DocItemLabel
 
 
+_SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".pptx")
+_JUNK_FILENAME_PREFIXES = (".DS_Store", "Thumbs.db", "._")
+_BOILERPLATE_HEADER = "Policy & Standard Operating Procedure"
+_CONTENT_LABELS = {DocItemLabel.PARAGRAPH, DocItemLabel.LIST_ITEM, DocItemLabel.TEXT}
+
+
 class Preprocessor:
     """
     Preprocess policy documents using Docling.
@@ -72,7 +78,7 @@ class Preprocessor:
         self.files = []
         for root, _, filenames in os.walk(self.extracted_dir):
             for filename in filenames:
-                if filename.lower().endswith((".pdf", ".docx", ".pptx")):
+                if filename.lower().endswith(_SUPPORTED_EXTENSIONS):
                     self.files.append(os.path.join(root, filename))
 
         print(f"[INFO] Found {len(self.files)} supported documents")
@@ -82,13 +88,12 @@ class Preprocessor:
         """
         Remove junk/system files from discovered file list.
         """
-        junk_patterns = [".DS_Store", "Thumbs.db", "._"]
         self.files = [
             f
             for f in self.files
             if not any(
-                os.path.basename(f).startswith(pattern) or os.path.basename(f) == pattern
-                for pattern in junk_patterns
+                os.path.basename(f).startswith(p) or os.path.basename(f) == p
+                for p in _JUNK_FILENAME_PREFIXES
             )
         ]
         print(f"[INFO] Files after junk cleanup: {len(self.files)}")
@@ -112,7 +117,6 @@ class Preprocessor:
         Parse document structure into title/headings/sections using Docling.
         """
         self.documents = []
-        boilerplate_header = "Policy & Standard Operating Procedure"
 
         for file_path in self.files:
             filename = os.path.basename(file_path)
@@ -123,19 +127,19 @@ class Preprocessor:
                 doc = result.document
 
                 extracted_title = None
-                headings_list = []
-                sections = []
+                headings_list: List[str] = []
+                sections: List[Dict] = []
                 current_heading = "General Information"
-                current_content = []
+                current_content: List[str] = []
 
                 for item, _level in doc.iterate_items():
                     if item.label == DocItemLabel.TITLE:
-                        if item.text.strip() == boilerplate_header:
+                        if item.text.strip() == _BOILERPLATE_HEADER:
                             continue
                         extracted_title = self._clean_title(item.text)
                         current_heading = extracted_title
                     elif item.label == DocItemLabel.SECTION_HEADER:
-                        if item.text.strip() == boilerplate_header:
+                        if item.text.strip() == _BOILERPLATE_HEADER:
                             continue
                         if extracted_title and item.text.strip() == extracted_title:
                             continue
@@ -151,11 +155,7 @@ class Preprocessor:
                         headings_list.append(item.text)
                     elif item.label == DocItemLabel.TABLE:
                         current_content.append(item.export_to_markdown(doc=doc))
-                    elif item.label in [
-                        DocItemLabel.PARAGRAPH,
-                        DocItemLabel.LIST_ITEM,
-                        DocItemLabel.TEXT,
-                    ]:
+                    elif item.label in _CONTENT_LABELS:
                         current_content.append(item.text)
 
                 if current_content:

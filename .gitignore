@@ -6,5 +6,5 @@ __pycache__/
 data/processed/
 data/raw/
 *.ipynb_checkpoints
-.env.example
+*.iml
 

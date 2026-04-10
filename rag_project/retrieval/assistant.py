@@ -1,5 +1,6 @@
 """LLM assistant module for RAG-based QA."""
 
+import re
 import time
 from typing import Dict, List, Optional
 
@@ -13,16 +14,22 @@ DEFAULT_SYSTEM_PROMPT = (
     "Always be professional, concise, and cite the exact section/title when possible."
 )
 
+_THINKING_TAG_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
+_CONTEXT_SEPARATOR = "\n\n" + "=" * 60 + "\n\n"
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <think>...</think> blocks that Qwen3 models emit before the answer."""
+    return _THINKING_TAG_RE.sub("", text).strip()
+
 
 class RAGAssistant:
-    """
-    RAG-powered assistant that uses Weaviate retrieval plus LLM generation.
-    """
+    """RAG-powered assistant that uses Weaviate retrieval plus LLM generation."""
 
     def __init__(
         self,
         rag_pipeline,
-        model_name: str = "Qwen/Qwen3-30B-A3B-Instruct",
+        model_name: str = "Qwen/Qwen3-30B-A3B",
         hf_token: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 1024,
@@ -60,16 +67,14 @@ class RAGAssistant:
         print(f"[STEP] RAGAssistant initialized with model: {model_name}")
 
     def _build_rag_context(self, query: str, num_results: int = 4) -> str:
-        """
-        Retrieve top reranked chunks and compose context block.
-        """
+        """Retrieve top reranked chunks and compose context block."""
         results: List[Dict] = self.rag_pipeline.query(query, limit=num_results)
         context_parts = []
         for index, res in enumerate(results, start=1):
             meta = res["metadata"]
             source = f"{meta['title']} -> {meta['heading']}"
             context_parts.append(f"[Source {index}] {source}\n{meta['text']}")
-        return "\n\n" + "=" * 60 + "\n\n".join(context_parts)
+        return _CONTEXT_SEPARATOR.join(context_parts)
 
     def answer(
         self,
@@ -79,9 +84,7 @@ class RAGAssistant:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
-        """
-        Answer question using retrieved policy context and chat completion.
-        """
+        """Answer question using retrieved policy context and chat completion."""
         effective_num_results = num_results or self.default_num_results
         context = self._build_rag_context(user_query, num_results=effective_num_results)
         system_prompt = custom_system_prompt or self.system_prompt
@@ -107,7 +110,8 @@ class RAGAssistant:
                     top_p=self.top_p,
                     stream=False,
                 )
-                return response.choices[0].message.content.strip()
+                raw = response.choices[0].message.content.strip()
+                return _strip_thinking(raw)
             except Exception as error:
                 if attempt >= self.max_retries:
                     raise RuntimeError(
@@ -121,4 +125,3 @@ class RAGAssistant:
                 time.sleep(wait_seconds)
 
         return ""
-
